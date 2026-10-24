@@ -10,6 +10,7 @@ from one_dragon_qt.view.setting.setting_push_interface import SettingPushInterfa
 from one_dragon_qt.widgets.navigation_button import NavigationButton
 from one_dragon_qt.windows.app_window_base import AppWindowBase
 from script_chainer.context.script_chainer_context import ScriptChainerContext
+from script_chainer.gui.page.desktop_clone_interface import DesktopCloneInterface
 from script_chainer.gui.page.editor_setting_interface import EditorSettingInterface
 from script_chainer.gui.page.script_setting_interface import ScriptSettingInterface
 
@@ -58,6 +59,8 @@ class AppWindow(AppWindowBase):
     def create_sub_interface(self):
         """创建和添加各个子界面"""
         self.add_sub_interface(ScriptSettingInterface(self.ctx, parent=self))
+
+        self.add_sub_interface(DesktopCloneInterface(self.ctx, parent=self))
 
         help_button = NavigationButton(
             object_name='script_chainer_help_button',

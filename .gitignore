@@ -10,7 +10,10 @@ __pycache__/
 
 # 运行过程文件
 .log/
+cache/
 config/script_chain/
 config/custom.yml
 config/push.yml
 config/env.yml
+config/desktop_clone.yml
+.tmp/

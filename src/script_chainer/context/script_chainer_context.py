@@ -10,6 +10,7 @@ from one_dragon.envs.ghproxy_service import GhProxyService
 from one_dragon.envs.project_config import ProjectConfig
 from one_dragon.utils import os_utils
 from one_dragon.utils.log_utils import log
+from script_chainer.config.desktop_clone_config import DesktopCloneConfig
 from script_chainer.config.script_config import ScriptChainConfig
 from script_chainer.services.github_update_service import GithubUpdateService
 
@@ -26,7 +27,27 @@ class ScriptChainerContext:
         self.github_update_service: GithubUpdateService = GithubUpdateService(self)
         self.push_service: PushService = PushService(self)
         self.notify_config: NotifyConfig = NotifyConfig(None, {})
+        self._desktop_clone_config: DesktopCloneConfig | None = None
+        self._desktop_clone_service = None
         self._init_lock = threading.Lock()
+
+    @property
+    def desktop_clone_config(self) -> DesktopCloneConfig:
+        """桌面分身配置，第一次访问时创建。"""
+        if self._desktop_clone_config is None:
+            self._desktop_clone_config = DesktopCloneConfig()
+        return self._desktop_clone_config
+
+    @property
+    def desktop_clone_service(self):
+        """桌面分身服务，第一次访问时创建（会引入 PySide6，命令行模式不会用到）。"""
+        if self._desktop_clone_service is None:
+            from script_chainer.services.desktop_clone.desktop_clone_service import (
+                DesktopCloneService,
+            )
+
+            self._desktop_clone_service = DesktopCloneService(self)
+        return self._desktop_clone_service
 
     def init(self) -> None:
         if not self._init_lock.acquire(blocking=False):
@@ -131,5 +152,11 @@ class ScriptChainerContext:
         App关闭后进行的操作 关闭一切可能资源操作
         @return:
         """
+        if self._desktop_clone_service is not None:
+            try:
+                self._desktop_clone_service.shutdown()
+            except Exception:
+                log.error('关闭桌面分身失败', exc_info=True)
+            self._desktop_clone_service = None
         self.push_service.after_app_shutdown()
         ONE_DRAGON_CONTEXT_EXECUTOR.shutdown(wait=False, cancel_futures=True)
