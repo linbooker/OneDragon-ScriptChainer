@@ -21,21 +21,23 @@ class DesktopCloneHostWidget(QWidget):
 
     def __init__(self, parent=None):
         QWidget.__init__(self, parent=parent)
-        self.setObjectName('desktop_clone_host_widget')
+        self.setObjectName("desktop_clone_host_widget")
         self.setStyleSheet(
-            '#desktop_clone_host_widget { background-color: #101014; }'
-            '#desktop_clone_host_stage { background-color: #000000; }'
+            "#desktop_clone_host_widget { background-color: #101014; }"
+            "#desktop_clone_host_stage { background-color: #000000; }"
         )
         self.setMinimumHeight(240)
 
         self._stage = QWidget(self)
-        self._stage.setObjectName('desktop_clone_host_stage')
+        self._stage.setObjectName("desktop_clone_host_stage")
         # 宿主需要真正的 HWND 才能 SetParent 进来，所以强制这个控件原生化
         self._stage.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, True)
 
-        self._placeholder = QLabel('桌面分身尚未连接', self)
+        self._placeholder = QLabel("桌面分身尚未连接", self)
         self._placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._placeholder.setStyleSheet('color: #8a8a8a; font-size: 14px; background: transparent;')
+        self._placeholder.setStyleSheet(
+            "color: #8a8a8a; font-size: 14px; background: transparent;"
+        )
 
         # 舞台的位置和大小由 _layout_stage 手动计算，不用布局管理器
         self._layout_stage()
@@ -47,7 +49,16 @@ class DesktopCloneHostWidget(QWidget):
         return int(self._stage.winId())
 
     def stage_size(self) -> tuple[int, int]:
-        return self._stage.width(), self._stage.height()
+        """舞台尺寸，按物理像素算。
+
+        宿主进程声明了按监视器 DPI 感知，拿到的是真实像素；这里如果给逻辑坐标，
+        高 DPI 下画面会只占左上角一小块。
+        """
+        ratio = self.devicePixelRatioF()
+        return (
+            int(round(self._stage.width() * ratio)),
+            int(round(self._stage.height() * ratio)),
+        )
 
     def stage_global_rect(self) -> tuple[int, int, int, int]:
         """舞台区域在屏幕上的 (x, y, 宽, 高)，用来摆放宿主窗口。
@@ -59,7 +70,12 @@ class DesktopCloneHostWidget(QWidget):
         top_left = self._stage.mapToGlobal(self._stage.rect().topLeft())
         width = int(round(self._stage.width() * ratio))
         height = int(round(self._stage.height() * ratio))
-        return int(round(top_left.x() * ratio)), int(round(top_left.y() * ratio)), width, height
+        return (
+            int(round(top_left.x() * ratio)),
+            int(round(top_left.y() * ratio)),
+            width,
+            height,
+        )
 
     # ---------- 占位文字 ----------
 

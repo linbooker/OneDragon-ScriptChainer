@@ -63,20 +63,23 @@ namespace OneDragonScriptChainer.DesktopClone
         /// <param name="sendSystemShortcuts">键盘是否发送 Windows 系统快捷键。</param>
         /// <param name="audioMuted">是否禁用声音重定向。</param>
         /// <param name="rdpPort">远程桌面端口，一般取注册表 RDP-Tcp 的 PortNumber。</param>
+        /// <param name="lowBandwidth">省性能模式：16 位色 + 关掉壁纸/主题等花哨效果。</param>
         internal void ConnectToChildSession(
             int width,
             int height,
             bool smartSizing,
             bool sendSystemShortcuts,
             bool audioMuted,
-            int rdpPort)
+            int rdpPort,
+            bool lowBandwidth)
         {
             object ocx = Ocx();
 
             SetProperty(ocx, "Server", "localhost");
             SetProperty(ocx, "DesktopWidth", ClampDesktopDimension(width));
             SetProperty(ocx, "DesktopHeight", ClampDesktopDimension(height));
-            SetProperty(ocx, "ColorDepth", 32);
+            // 4K 下单是 32 位色的位图就够吃 CPU 了，省性能模式退到 16 位色
+            SetProperty(ocx, "ColorDepth", lowBandwidth ? 16 : 32);
             SetProperty(ocx, "ConnectingText", "正在连接桌面分身…");
             SetProperty(ocx, "DisconnectedText", "桌面分身已断开连接");
 
@@ -99,6 +102,15 @@ namespace OneDragonScriptChainer.DesktopClone
             SetProperty(advancedSettings, "EnableCredSspSupport", true);
             SetProperty(advancedSettings, "EnableWindowsKey", sendSystemShortcuts ? 1 : 0);
             SetProperty(advancedSettings, "SmartSizing", smartSizing);
+
+            if (lowBandwidth)
+            {
+                TrySetProperty(advancedSettings, "DisableWallpaper", true);
+                TrySetProperty(advancedSettings, "DisableFullWindowDrag", true);
+                TrySetProperty(advancedSettings, "DisableMenuAnims", true);
+                TrySetProperty(advancedSettings, "DisableThemes", true);
+                TrySetProperty(advancedSettings, "BitmapPersistence", 0);
+            }
 
             // 子会话连接需要 IMsRdpExtendedSettings 上打开这两个开关，否则控件只会连上当前桌面
             var extendedSettings = (IMsRdpExtendedSettings)ocx;
@@ -311,6 +323,19 @@ namespace OneDragonScriptChainer.DesktopClone
                 null,
                 target,
                 null);
+        }
+
+        /// <summary>设置属性，属性不存在时忽略（不同 Windows 版本的接口不一样）。</summary>
+        private static void TrySetProperty(object target, string name, object value)
+        {
+            try
+            {
+                SetProperty(target, name, value);
+            }
+            catch (Exception)
+            {
+                // 老系统上的远程桌面控件可能没有这个属性
+            }
         }
 
         private static void SetProperty(object target, string name, object value)

@@ -152,6 +152,46 @@ namespace OneDragonScriptChainer.DesktopClone
         internal const int SmCyScreen = 1;
 
         /// <summary>把窗口的物理像素矩形拼成一行文本，用于排查尺寸/DPI 问题。</summary>
+        [DllImport("user32.dll")]
+        private static extern bool GetClientRect(IntPtr hwnd, out NativeRect rect);
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct NativeRect
+        {
+            internal int Left;
+            internal int Top;
+            internal int Right;
+            internal int Bottom;
+        }
+
+        internal static string DescribeClientRect(IntPtr hwnd)
+        {
+            if (hwnd == IntPtr.Zero)
+            {
+                return "0x0";
+            }
+
+            NativeRect rect;
+            if (!GetClientRect(hwnd, out rect))
+            {
+                return "0x0";
+            }
+
+            return (rect.Right - rect.Left).ToString()
+                + "x" + (rect.Bottom - rect.Top).ToString();
+        }
+
+        internal static string DescribeStyle(IntPtr hwnd)
+        {
+            if (hwnd == IntPtr.Zero)
+            {
+                return "0";
+            }
+
+            int style = (int)GetWindowLongPtrW(hwnd, -16).ToInt64();
+            return "0x" + style.ToString("X8");
+        }
+
         internal static string DescribeWindowRect(IntPtr hwnd)
         {
             Rect rect;
@@ -356,6 +396,9 @@ namespace OneDragonScriptChainer.DesktopClone
             SetWindowPos(hwnd, HwndTop, 0, 0, 0, 0, SwpNoMove | SwpNoSize | SwpNoActivate);
             ShowWindow(hwnd, SwShowNoActivate);
         }
+
+        /// <summary>SW_SHOW</summary>
+        internal const int SwShow = 5;
 
         /// <summary>隐藏窗口。</summary>
         internal static void HideWindow(IntPtr hwnd)

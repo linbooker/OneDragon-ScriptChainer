@@ -129,6 +129,37 @@ jobs:
         Remove-Item -Path $upxDir -Recurse -Force
         Remove-Item -Path $zipPath -Force
 
+    - name: Build desktop clone host
+      shell: pwsh
+      run: |
+        $csc = Join-Path $env:WINDIR "Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+        if (-not (Test-Path $csc)) {
+          throw "找不到 .NET Framework 编译器: $csc"
+        }
+
+        $frameworkDir = Split-Path $csc
+        $src = "assets/desktop_clone/host"
+        $out = "assets/desktop_clone/bin/DesktopCloneHost.exe"
+        New-Item -ItemType Directory -Force -Path (Split-Path $out) | Out-Null
+
+        & $csc -nologo -target:winexe -platform:anycpu -optimize+ "-out:$out" `
+          "-r:$frameworkDir\System.dll" `
+          "-r:$frameworkDir\System.Core.dll" `
+          "-r:$frameworkDir\System.Windows.Forms.dll" `
+          "-r:$frameworkDir\System.Drawing.dll" `
+          "$src\NativeMethods.cs" `
+          "$src\ProtocolWriter.cs" `
+          "$src\StdinLineReader.cs" `
+          "$src\RdpClient.cs" `
+          "$src\SessionLauncher.cs" `
+          "$src\WindowHosting.cs" `
+          "$src\HostForm.cs" `
+          "$src\Program.cs"
+
+        if ($LASTEXITCODE -ne 0) {
+          throw "桌面分身宿主程序编译失败"
+        }
+
     - name: Build executables
       shell: pwsh
       run: |

@@ -18,27 +18,28 @@ C# 宿主进程实现画面：
 
 ```
 OneDragon ScriptChainer (Python + Qt)          DesktopCloneHost.exe (C# / WinForms)
-├── 页面工具条 / 设置卡片        stdin  →      connect / disconnect / logoff
-├── QProcess 启动宿主            ───────       launch / shortcut / input ...
-└── 每 250ms 把「画面」区域      stdout ←      ready / state / session / launched
-    的屏幕位置发给宿主                            │
-        ▲  无边框顶层窗口叠在画面上               │
-        └─────────────────────────────────────┘
+├── 页面工具条 / 设置栏          stdin  →      connect / disconnect / logoff
+├── QProcess 启动宿主            ───────       embed / resize / launch / shortcut ...
+└── 画面控件（QWidget）          stdout ←      ready / state / session / launched
+         ▲  embed <hwnd> <w> <h>                      │
+         └──── 宿主 SetParent 成子窗口，铺满控件 ──────┘
                                          MsRdpClient10 ActiveX（RDP 控件）
 ```
 
-* 页面上的「画面」区域按 16:9 居中，宿主是一个**无边框顶层窗口**，由 Python 侧每 250ms
-  把画面区域在屏幕上的位置/尺寸发给它，叠在画面区域正上方（不跨进程 `SetParent`，
-  那种做法在按监视器 DPI 缩放的机器上会让窗口变成不可见的透明层）；
-* 宿主声明按监视器 DPI 感知，Python 侧按屏幕缩放比例换算成真实像素再下发，缩放 125% / 150%
-  的机器上位置和大小都对得上；
-* 没连上时宿主把远程桌面控件整个藏起来（它内部的子窗口会盖住一切），直接在窗口上画状态提示文字；
-* 分身画面是置顶窗口，会盖住主界面，所以页面里的提示不用全局 InfoBar，而是显示在
-  工具栏下方的页面内提示条上（`notice_label`），过期自动隐藏；
-* 窗口的上下层关系：本程序在前台时宿主窗口**置顶**，压在页面「画面」区域正上方；
-  切到别的程序时自动取消置顶，不会一直挂在别人窗口上面。在画面里操作时前台窗口是宿主自己，同样保持置顶；
+* 宿主窗口是**无边框子窗口**：Python 侧把页面里画面控件的句柄发给宿主（`embed <hwnd> <w> <h>`），
+  宿主先 `AttachThreadInput` 再 `SetParent` + `SetWindowPos` 铺满整个控件，所以画面是真正嵌在
+  应用里的，不会单独浮一个窗口；
+* 画面控件尺寸变化时（拖动窗口、切页回来、最大化）Python 侧会重发尺寸，宿主在控件坐标系里
+  跟着重排；宿主声明按监视器 DPI 感知，下发的尺寸按 `devicePixelRatioF()` 换算成物理像素；
+* 跨线程的窗口句柄不能直接 `SetParent`（会拿到 0x80070578 之类的错误），宿主会先把当前线程
+  附加到父窗口所在线程的输入队列上（`AttachThreadInput`），操作完再摘掉；
+* 没连上时宿主把远程桌面控件整个藏起来（它内部的子窗口会盖住一切），直接在控件上画状态提示文字；
+* 页面里的提示不用全局 InfoBar，而是显示在工具栏下方的页面内提示条上（`notice_label`），过期自动隐藏；
+* 日志面板浮在画面右下角，盖在画面之上；工具栏的「日志」按钮或面板自己的「关闭」都可以收起它；
+  日志同时会写进 `log/log.txt`；
 * 连接用的是 `localhost` + `ConnectToChildSession = true`，**不需要账号密码**（子会话是当前登录用户的会话）；
-* 宿主会读写一行一条的文本协议，Python 侧只需要读 stdout，不用处理复杂的 COM 事件。
+* 宿主会读写一行一条的文本协议，Python 侧只需要读 stdout，不用处理复杂的 COM 事件；
+* 连接是异步的：点「连接」后如果宿主 25 秒还没给出结果，页面会主动取消这次连接并把按钮放开。
 
 ## 环境要求
 
@@ -62,19 +63,42 @@ OneDragon ScriptChainer (Python + Qt)          DesktopCloneHost.exe (C# / WinFor
 4. 「注销分身」会断开会话并注销子会话（里面的程序会被关掉）；
    只点「断开」时画面会关掉，但**子会话和里面的程序继续运行**，
    下次点「启动画面」会重新连回同一个会话；切到别的页面只是把画面隐藏起来，连接不会断。
+5. 点「小窗」把画面切到独立的小窗里，小窗只留「还原」和「置顶」两个按钮：
+   还原放回页面、置顶控制窗口是否浮在最前；小窗开着时切到别的页面画面也不会消失。
+6. 关闭主程序时，如果分身会话还在运行，会弹窗问「是否一并注销」：
+   选「注销并关闭」会先注销子会话再退出，选「仅关闭」则只关界面，会话留在后台。
+
+## 启动参数
+
+启动参数与原来完全兼容，最后加一个 `--desktop-clone` 就会把要跑的东西丢进分身：
+
+```bat
+:: 原来：直接在本桌面跑脚本链 01
+OneDragon ScriptChainer.exe --onedragon --chain 01
+
+:: 现在：在桌面分身里跑脚本链 01
+OneDragon ScriptChainer.exe --onedragon --chain 01 --desktop-clone
+
+:: 在桌面分身里打开千机链界面
+OneDragon ScriptChainer.exe --desktop-clone
+```
+
+`--debug-index`、`--shutdown` 等参数会一并带进分身里的进程；启动器本身在确认
+「已在分身里启动」之后就退出了，子会话里的程序继续运行。
 
 ## 设置项
 
 | 设置 | 说明 |
 | --- | --- |
-| 分辨率 | 子会话的桌面大小，窗口会自动等比缩放 |
-| 打开页面时自动连接 | 进入页面时自动启动画面 |
+| 分辨率 | 子会话的桌面大小，窗口会自动等比缩放（改完需要重连） |
 | 观看模式 | 屏蔽向子会话发送的输入，只用来观察 |
-| 智能缩放 | 画面跟随控件大小缩放（关闭后按分辨率显示） |
+| 自适应 | 画面跟随控件大小缩放（关闭后按分辨率显示） |
 | 静音 | 不把子会话的声音转发出来 |
-| 发送系统快捷键 | 允许 Win 键等系统组合键进入子会话；关闭时这些键留在主桌面 |
-| 保持在其他窗口之上 | 宿主窗口不能被别的窗口挡住（仅在本程序内生效） |
-| 目标程序 / 启动参数 / 脚本链 | 「启动到分身」使用的命令 |
+| 系统快捷键送分身 | 允许 Win 键等系统组合键进入子会话；关闭时这些键留在主桌面 |
+| 程序 / 参数 / 脚本链 | 「启动到分身」使用的命令 |
+| 日志 | 画面右下角的日志面板，可以随时关掉 |
+| 小窗 | 把画面切到独立小窗，只有「还原」和「置顶」 |
+| 省性能 | 16 位色并关掉壁纸/主题/动画，4K 下建议开启 |
 
 ## 文件
 
@@ -87,8 +111,10 @@ src/script_chainer/services/desktop_clone/
     host_builder.py                定位或编译宿主 exe（按源码哈希缓存）
     host_process.py                QProcess + 行协议
     desktop_clone_service.py       状态机与对外接口
+    desktop_clone_runner.py        命令行 --desktop-clone 的落地
 src/script_chainer/gui/page/desktop_clone_interface.py   页面
 src/script_chainer/gui/widget/desktop_clone_host_widget.py   显示画面的控件
+src/script_chainer/gui/widget/desktop_clone_mini_window.py    小窗（还原/置顶）
 ```
 
 宿主 exe 优先从 `assets/desktop_clone/bin/DesktopCloneHost.exe` 读取（发布包里有），

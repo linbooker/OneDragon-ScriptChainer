@@ -17,3 +17,4 @@ config/push.yml
 config/env.yml
 config/desktop_clone.yml
 .tmp/
+/.build_tmp

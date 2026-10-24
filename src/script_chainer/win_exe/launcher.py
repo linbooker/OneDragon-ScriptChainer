@@ -37,6 +37,14 @@ class ScriptChainerLauncher(ExeLauncher):
             default=None,
             help="仅调试指定下标脚本，并按挂靠关系一并编排（禁用项仍会跳过）",
         )
+        parser.add_argument(
+            "--desktop-clone",
+            action="store_true",
+            help=(
+                "在桌面分身（Windows 子会话）里启动，可与其他参数一起用："
+                "例如 --onedragon --chain 01 --desktop-clone"
+            ),
+        )
 
     @staticmethod
     def _hide_console() -> None:
@@ -49,11 +57,39 @@ class ScriptChainerLauncher(ExeLauncher):
         """启动 GUI 配置编辑器"""
         self._hide_console()
 
+        if self.args is not None and getattr(self.args, "desktop_clone", False):
+            self._run_in_desktop_clone(launch_gui=True)
+
         from script_chainer.win_exe.config_editor import run_editor
+
         run_editor()
+
+    def _run_in_desktop_clone(self, launch_gui: bool) -> None:
+        """把本程序丢进桌面分身里跑，随后自己退出。"""
+        from script_chainer.services.desktop_clone.desktop_clone_runner import (
+            launch_in_desktop_clone,
+        )
+
+        extra_arguments = ""
+        if self.args is not None:
+            if self.args.debug_index is not None:
+                extra_arguments += f" --debug-index {self.args.debug_index}"
+            if getattr(self.args, "shutdown", None):
+                extra_arguments += f" --shutdown {self.args.shutdown}"
+
+        chain_name = None if launch_gui else (self.args.chain if self.args else None)
+        code = launch_in_desktop_clone(
+            chain_name=chain_name,
+            launch_gui=launch_gui,
+            extra_arguments=extra_arguments,
+        )
+        sys.exit(code)
 
     def run_onedragon_mode(self, launch_args) -> None:
         """运行脚本链"""
+        if self.args is not None and getattr(self.args, "desktop_clone", False):
+            self._run_in_desktop_clone(launch_gui=False)
+
         from script_chainer.win_exe.script_runner import run_chain
 
         # 从 launch_args 和 self.args 中提取参数

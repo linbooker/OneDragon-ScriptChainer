@@ -48,6 +48,8 @@ namespace OneDragonScriptChainer.DesktopClone
 
         private int _desktopWidth = DefaultDesktopWidth;
         private int _desktopHeight = DefaultDesktopHeight;
+        private bool _lowBandwidth;
+
         private bool _smartSizing = true;
         private bool _audioMuted;
         private bool _sendSystemShortcuts = true;
@@ -64,6 +66,10 @@ namespace OneDragonScriptChainer.DesktopClone
         private bool _embedded;
 
         private IntPtr _embedParent;
+
+        private int _embedWidth;
+
+        private int _embedHeight;
 
         /// <summary>切换分辨率必须断开重连，这里记住重连目标尺寸。</summary>
         private int _pendingDesktopWidth;
@@ -424,10 +430,11 @@ namespace OneDragonScriptChainer.DesktopClone
                         _rdp.SetInputEnabled(!_inputBlocked);
                         break;
                     case "embed":
+                        // embed 句柄 宽 高：parts[2] 是宽，别写成 parts[3]
                         EmbedWindow(
                             ParseHandle(parts, 1),
-                            ParseInt(parts, 3, DefaultDesktopWidth / 2),
-                            ParseInt(parts, 4, DefaultDesktopHeight / 2));
+                            ParseInt(parts, 2, DefaultDesktopWidth / 2),
+                            ParseInt(parts, 3, DefaultDesktopHeight / 2));
                         break;
                     case "resize":
                         ResizeEmbedded(
@@ -454,6 +461,12 @@ namespace OneDragonScriptChainer.DesktopClone
                         break;
                     case "topmost":
                         NativeMethods.SetTopMost(Handle, ParseBool(parts, 1));
+                        break;
+                    case "lowbw":
+                        _lowBandwidth = ParseBool(parts, 1);
+                        break;
+                    case "visible":
+                        SetEmbeddedVisible(ParseBool(parts, 1));
                         break;
                     case "status":
                         ReportStatus();
@@ -493,6 +506,26 @@ namespace OneDragonScriptChainer.DesktopClone
         }
 
         /// <summary>真正显示窗口（第一次显示会顺带把 WinForms 的 Visible 置上）。</summary>
+        private void SetEmbeddedVisible(bool visible)
+        {
+            if (_embedded)
+            {
+                // 嵌在页面里的时候，页面切走要把窗口一起藏起来，
+                // 否则它只是窗口的「子窗口」，Qt 藏了控件它也还画在原处
+                NativeMethods.ShowWindow(Handle, visible ? NativeMethods.SwShow : NativeMethods.SwHide);
+                return;
+            }
+
+            if (visible)
+            {
+                ShowOverlay();
+            }
+            else
+            {
+                HideOverlay();
+            }
+        }
+
         private void ShowOverlay()
         {
             if (_embedded)
@@ -539,6 +572,9 @@ namespace OneDragonScriptChainer.DesktopClone
             builder.Append(" 主窗口=").Append(_ownerHandle.ToInt64().ToString());
             builder.Append(" 嵌入=").Append(_embedded ? "1" : "0");
             builder.Append(" 父窗口=").Append(_embedParent.ToInt64().ToString());
+            builder.Append(" 期望=").Append(_embedWidth).Append("x").Append(_embedHeight);
+            builder.Append(" 父客户区=").Append(NativeMethods.DescribeClientRect(_embedParent));
+            builder.Append(" 样式=").Append(NativeMethods.DescribeStyle(Handle));
             _writer.Message(builder.ToString());
         }
 
@@ -568,7 +604,8 @@ namespace OneDragonScriptChainer.DesktopClone
                     _smartSizing,
                     _sendSystemShortcuts,
                     _audioMuted,
-                    port);
+                    port,
+                    _lowBandwidth);
             }
             catch (Exception ex)
             {
@@ -686,10 +723,12 @@ namespace OneDragonScriptChainer.DesktopClone
                 return;
             }
 
-            // 变成子窗口后 WinForms 不能再按顶层窗口管理它，否则会用 Show/Hide 抢走位置
-            TopLevel = false;
+            // 只走原生 SetParent：一旦把 TopLevel 置成 false，WinForms 会接管
+            // 父子关系并在下一次布局时用自己的 Bounds 覆盖我们设的大小
             _layoutTimer.Stop();
             _embedParent = parent;
+            _embedWidth = width;
+            _embedHeight = height;
             _embedded = WindowHosting.Embed(Handle, parent, width, height);
             if (!_embedded)
             {
