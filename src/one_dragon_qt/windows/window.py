@@ -1,4 +1,19 @@
-from PySide6.QtCore import Qt, QUrl, Signal
+import contextlib
+import ctypes
+from ctypes import wintypes
+
+import win32api
+import win32con
+import win32gui
+from PySide6.QtCore import (
+    QAbstractNativeEventFilter,
+    QEvent,
+    QObject,
+    Qt,
+    QTimer,
+    QUrl,
+    Signal,
+)
 from PySide6.QtGui import QColor, QDesktopServices, QIcon
 from PySide6.QtWidgets import (
     QAbstractScrollArea,
@@ -24,6 +39,33 @@ from qfluentwidgets.window.stacked_widget import StackedWidget
 
 from one_dragon_qt.utils.layout_utils import apply_shadow
 
+try:
+    _user32 = ctypes.WinDLL('user32', use_last_error=True)
+except OSError:
+    _user32 = None
+
+_HWND_TOP = 0
+_SWP_NOSIZE = 0x0001
+_SWP_NOMOVE = 0x0002
+_SWP_NOACTIVATE = 0x0010
+
+
+def _raise_native_child(widget_handle: int) -> None:
+    """把一个原生子窗口提到它父窗口 z 序的最上面。
+
+    注意：这里不能用 ``QWidget.raise_()``。``AA_DontCreateNativeWidgetSiblings``
+    打开后，Qt 会把嵌了原生子窗口的祖先控件（``areaWidget``）也变成原生窗口，
+    而 ``raise_()`` 对这种「原生兄弟窗口」是空操作（实测调完 z 序一点没变），
+    只有直接调 ``SetWindowPos(HWND_TOP)`` 才真的能提上去。
+    """
+    if widget_handle == 0 or _user32 is None:
+        return
+    _user32.SetWindowPos(
+        ctypes.c_void_p(widget_handle), ctypes.c_void_p(_HWND_TOP),
+        0, 0, 0, 0,
+        _SWP_NOSIZE | _SWP_NOMOVE | _SWP_NOACTIVATE,
+    )
+
 
 # 伪装父类 (替换 FluentWindowBase 初始化)
 class PhosFluentWindowBase(BackgroundAnimationWidget, FramelessWindow):
@@ -31,6 +73,118 @@ class PhosFluentWindowBase(BackgroundAnimationWidget, FramelessWindow):
 
     def __init__(self, parent=None):
         super().__init__(parent=parent)
+
+
+class _TitleBarWatcher(QObject):
+    """盯着「有控件新拿了原生窗口 / 有子控件被重新显示」这件事，把标题栏压回最上层。
+
+    原生子窗口是被插到父窗口 z 序最上面的。桌面分身的画面要 SetParent 进来，
+    Qt 会把一路上的祖先控件（``areaWidget`` 等）都在**运行中**变成原生窗口，
+    这些窗口建出来的时间比标题栏晚，就直接盖在标题栏上面，标题栏再也点不到。
+    光在显示/切页时抬一次不够——变原生可能发生在任何时刻（点「启动画面」、
+    嵌画面、开小窗），而且原生控件被 ``show()`` 时 Qt 也会把它提到最上面，
+    所以这里改用事件驱动。
+    """
+
+    def __init__(self, window: QWidget):
+        super().__init__(window)
+        self._window = window
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
+
+    def eventFilter(self, obj, event) -> bool:
+        event_type = event.type()
+        if event_type not in (QEvent.Type.WinIdChange, QEvent.Type.Show):
+            return False
+        if not isinstance(obj, QWidget):
+            return False
+        try:
+            if obj is self._window.titleBar:
+                return False
+            if obj is not self._window and not self._window.isAncestorOf(obj):
+                return False
+            keep_on_top = getattr(self._window, '_keep_title_bar_on_top', None)
+            if keep_on_top is not None:
+                keep_on_top()
+        except RuntimeError:
+            # 窗口已经销毁、包装对象还活着的事件，直接忽略
+            pass
+        return False
+
+
+class _NativeBorderFilter(QAbstractNativeEventFilter):
+    """边框附近的命中测试交还给主窗口，保证无边框窗口还能从边上缩放。
+
+    桌面分身的画面嵌进来后，Qt 会把 ``areaWidget`` 一路的祖先都变成原生窗口，
+    它们铺满整个客户区，把无边框窗口自己的边框也盖住了。鼠标在边框那几像素上
+    按下时命中的是这些子窗口，主窗口根本收不到 ``WM_NCHITTEST``，于是窗口既
+    拖不了也缩不了。这里在子窗口做命中测试时直接回答 ``HTTRANSPARENT``，系统
+    会改问同一线程里下层的窗口（也就是主窗口），``qframelesswindow`` 的边框
+    判断就能正常跑起来。
+    """
+
+    # 与 qframelesswindow 的 BORDER_WIDTH 保持一致
+    BORDER_WIDTH = 5
+
+    def __init__(self, window: QWidget):
+        super().__init__()
+        self._window = window
+        self._handle = 0
+
+    def attach(self, handle: int) -> None:
+        """主窗口的句柄变了（第一次显示、重建）就重新记一下。"""
+        self._handle = handle
+
+    def nativeEventFilter(self, event_type, message):
+        if event_type not in (b'windows_generic_MSG', 'windows_generic_MSG'):
+            return False, 0
+        window_handle = self._handle
+        if window_handle == 0 or _user32 is None:
+            return False, 0
+        try:
+            msg = wintypes.MSG.from_address(int(message))
+        except (TypeError, ValueError):
+            return False, 0
+        if msg.message != win32con.WM_NCHITTEST or not msg.hWnd:
+            return False, 0
+
+        child_handle = int(msg.hWnd)
+        if child_handle == window_handle:
+            # 主窗口自己那条消息交给 qframelesswindow 处理
+            return False, 0
+
+        try:
+            window_state = self._window.windowState()
+        except RuntimeError:
+            # 窗口已经被销毁，过滤器还留在 QApplication 上
+            self._handle = 0
+            return False, 0
+        if window_state & (Qt.WindowState.WindowMaximized | Qt.WindowState.WindowFullScreen):
+            return False, 0
+
+        try:
+            if not win32gui.IsChild(window_handle, child_handle):
+                return False, 0
+        except win32gui.error:
+            return False, 0
+
+        try:
+            x, y = win32gui.ScreenToClient(window_handle, win32api.GetCursorPos())
+            left, top, right, bottom = win32gui.GetClientRect(window_handle)
+        except win32gui.error:
+            return False, 0
+
+        border = self.BORDER_WIDTH
+        on_border = (
+            x < border or y < border
+            or x > right - border or y > bottom - border
+        )
+        if not on_border:
+            return False, 0
+
+        # HTTRANSPARENT：这一下不算这个子窗口的，交给下层的窗口
+        return True, win32con.HTTRANSPARENT
 
 
 # 主窗口类 (继承自 MSFluentWindow )
@@ -61,6 +215,19 @@ class PhosWindow(MSFluentWindow, PhosFluentWindowBase):
         self.areaLayout.addWidget(self.stackedWidget)
         self.setTitleBar(PhosTitleBar(self))
 
+        # 标题栏要有自己的原生窗口，否则会被原生子窗口盖住、鼠标点不到，
+        # 详见 _keep_title_bar_on_top()
+        self.titleBar.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, True)
+        # 任何后代控件在运行中变成原生窗口，都要把标题栏重新压回最上层
+        self._title_bar_watcher = _TitleBarWatcher(self)
+        self._title_raise_pending = False
+        # 边框上的命中测试要交还给主窗口，否则原生子窗口会把缩放边吃掉，
+        # 详见 _NativeBorderFilter
+        self._native_border_filter = _NativeBorderFilter(self)
+        app = QApplication.instance()
+        if app is not None:
+            app.installNativeEventFilter(self._native_border_filter)
+
         # 配置
         self.hBoxLayout.setSpacing(0)
         self.hBoxLayout.setContentsMargins(0, 0, 0, 0)
@@ -82,10 +249,57 @@ class PhosWindow(MSFluentWindow, PhosFluentWindowBase):
         else:
             return self._lightBackgroundColor
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._native_border_filter.attach(int(self.winId()))
+        self._keep_title_bar_on_top()
+
+    def _keep_title_bar_on_top(self) -> None:
+        """把标题栏压在最上层，并保证它自己有独立的原生窗口。
+
+        桌面分身的画面是另一个进程的原生子窗口，Qt 会连带把它所有的祖先都变成
+        原生窗口；``areaWidget`` 的原生窗口铺满客户区（连标题栏那一条也盖住）。
+        标题栏如果还是不需要句柄的普通控件，鼠标点下去命中的就是 ``areaWidget``
+        的原生窗口，标题栏根本收不到按下事件，窗口也就拖不动了。
+
+        原生化是 Qt 在内部异步做的（切页、嵌画面、开小窗都可能触发），所以这
+        里除了当场提一次，还在事件循环空闲时再补一次。
+        """
+        title_bar = self.titleBar
+        if title_bar is None:
+            return
+        # 窗口句柄可能被重建（改窗口标志、切原生），顺手把边框过滤器指回新句柄
+        window_handle = int(self.internalWinId())
+        if window_handle:
+            self._native_border_filter.attach(window_handle)
+        if not title_bar.testAttribute(Qt.WidgetAttribute.WA_NativeWindow):
+            title_bar.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, True)
+        title_bar.raise_()
+        _raise_native_child(int(title_bar.winId()))
+        self._schedule_title_bar_raise()
+
+    def _schedule_title_bar_raise(self) -> None:
+        """事件循环空闲时再提一次标题栏，兜住 Qt 延后创建原生窗口的情况。
+        """
+        if self._title_raise_pending:
+            return
+        self._title_raise_pending = True
+
+        def raise_again() -> None:
+            self._title_raise_pending = False
+            title_bar = self.titleBar
+            if title_bar is None:
+                return
+            with contextlib.suppress(RuntimeError):
+                _raise_native_child(int(title_bar.winId()))
+
+        QTimer.singleShot(0, raise_again)
+
     # 调整标题栏位置
     def resizeEvent(self, e):
         self.titleBar.move(88, 0)
         self.titleBar.resize(self.width() - 88, self.titleBar.height())
+        self._keep_title_bar_on_top()
 
 
 class PhosTitleBar(SplitTitleBar):

@@ -1,4 +1,3 @@
-import os
 
 from PySide6.QtCore import QSize
 from PySide6.QtGui import QIcon
@@ -94,3 +93,8 @@ class AppWindowBase(PhosWindow):
         base_interface: BaseInterface = self.stackedWidget.currentWidget()
         if isinstance(base_interface, BaseInterface):
             base_interface.on_interface_shown()
+        # 页面里可能出现原生子窗口（如桌面分身画面），会把 areaWidget 变成
+        # 盖住客户区的原生窗口，标题栏要重新压回最上层才能继续拖动窗口
+        keep_title_bar_on_top = getattr(self, '_keep_title_bar_on_top', None)
+        if keep_title_bar_on_top is not None:
+            keep_title_bar_on_top()
