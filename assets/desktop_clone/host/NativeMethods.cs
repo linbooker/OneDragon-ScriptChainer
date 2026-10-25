@@ -99,6 +99,16 @@ namespace OneDragonScriptChainer.DesktopClone
         [return: MarshalAs(UnmanagedType.Bool)]
         internal static extern bool EnableWindow(IntPtr hwnd, [MarshalAs(UnmanagedType.Bool)] bool enabled);
 
+        /// <summary>hwnd 是否是 parent 的后代窗口（不含 parent 自己）。</summary>
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static extern bool IsChild(IntPtr parent, IntPtr hwnd);
+
+        /// <summary>释放本线程当前持有的鼠标捕获；没有捕获时什么也不做。</summary>
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static extern bool ReleaseCapture();
+
         [DllImport("user32.dll")]
         [return: MarshalAs(UnmanagedType.Bool)]
         internal static extern bool IsWindow(IntPtr hwnd);

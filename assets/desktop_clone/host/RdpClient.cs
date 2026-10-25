@@ -10,13 +10,38 @@ namespace OneDragonScriptChainer.DesktopClone
     /// 该控件连接本机的「子会话」桌面，从而把「桌面分身」画面嵌进本程序的窗口。
     /// 机制与 BetterGenshinImpact 的 RdpActiveXHost 相同。
     /// </summary>
-    internal sealed class RdpClient : AxHost
+    internal sealed class RdpClient : AxHost, IMessageFilter
     {
         /// <summary>MsRdpClient10 NotSafeForScripting 的 CLSID，Windows 10 及以后可用。</summary>
         private const string RdpClientClassId = "A0C63C30-F08D-4AB4-907C-34905D770C7D";
 
         private const short VariantTrue = -1;
         private const short VariantFalse = 0;
+
+        // 观看模式要拦的消息：鼠标移动、按键、滚轮和原始输入。点击类消息顺带一起拦，
+        // 不然画面里点一下还是会把窗口激活或给远程会话送去一次点击。
+        private const int WmInput = 0x00FF;
+        private const int WmKeyDown = 0x0100;
+        private const int WmKeyUp = 0x0101;
+        private const int WmChar = 0x0102;
+        private const int WmSysKeyDown = 0x0104;
+        private const int WmSysKeyUp = 0x0105;
+        private const int WmSysChar = 0x0106;
+        private const int WmMouseMove = 0x0200;
+        private const int WmLeftButtonDown = 0x0201;
+        private const int WmLeftButtonUp = 0x0202;
+        private const int WmLeftButtonDoubleClick = 0x0203;
+        private const int WmRightButtonDown = 0x0204;
+        private const int WmRightButtonUp = 0x0205;
+        private const int WmRightButtonDoubleClick = 0x0206;
+        private const int WmMiddleButtonDown = 0x0207;
+        private const int WmMiddleButtonUp = 0x0208;
+        private const int WmMiddleButtonDoubleClick = 0x0209;
+        private const int WmMouseWheel = 0x020A;
+        private const int WmXButtonDown = 0x020B;
+        private const int WmXButtonUp = 0x020C;
+        private const int WmXButtonDoubleClick = 0x020D;
+        private const int WmMouseHWheel = 0x020E;
 
         private const int KeyboardHookModeLocal = 0;
         private const int KeyboardHookModeRemote = 1;
@@ -36,6 +61,8 @@ namespace OneDragonScriptChainer.DesktopClone
             Dock = DockStyle.Fill;
             BackColor = System.Drawing.Color.Black;
             TabStop = false;
+            // 观看模式不能靠控件自己配合，得在消息派发之前拦下来，见 PreFilterMessage
+            Application.AddMessageFilter(this);
         }
 
         /// <summary>远程桌面控件的连接状态：0 未连接、1 已连接、其它见 IMsTscAx。</summary>
@@ -214,7 +241,14 @@ namespace OneDragonScriptChainer.DesktopClone
         /// <summary>屏蔽/放开远程桌面侧的输入捕获窗口（跨空间拖动时用）。</summary>
         internal void SetInputEnabled(bool enabled)
         {
+            bool wasBlocked = _inputBlocked;
             _inputBlocked = !enabled;
+            if (_inputBlocked && !wasBlocked)
+            {
+                // 进入观看模式时控件可能已经把鼠标抓在手里，还回去，光标就能收回本地
+                NativeMethods.ReleaseCapture();
+            }
+
             IntPtr inputWindow = FindInputCaptureWindow();
             if (inputWindow == IntPtr.Zero)
             {
@@ -222,6 +256,79 @@ namespace OneDragonScriptChainer.DesktopClone
             }
 
             NativeMethods.EnableWindow(inputWindow, enabled);
+        }
+
+        /// <summary>
+        /// 观看模式的消息闸门。
+        ///
+        /// 只把 Input Capture Window 禁用并不够：鼠标移动是控件窗口自己转发给远程会话的，
+        /// 不经过那扇窗，所以画面里的鼠标照样跟着动。这里在消息派发之前把指向远程桌面
+        /// 控件的鼠标/键盘消息整条丢掉，观看模式才真的是「只能看」。
+        /// </summary>
+        public bool PreFilterMessage(ref Message m)
+        {
+            if (!_inputBlocked || !BelongsToRemoteDesktop(m.HWnd))
+            {
+                return false;
+            }
+
+            switch (m.Msg)
+            {
+                case WmInput:
+                case WmKeyDown:
+                case WmKeyUp:
+                case WmChar:
+                case WmSysKeyDown:
+                case WmSysKeyUp:
+                case WmSysChar:
+                case WmMouseMove:
+                case WmLeftButtonDown:
+                case WmLeftButtonUp:
+                case WmLeftButtonDoubleClick:
+                case WmRightButtonDown:
+                case WmRightButtonUp:
+                case WmRightButtonDoubleClick:
+                case WmMiddleButtonDown:
+                case WmMiddleButtonUp:
+                case WmMiddleButtonDoubleClick:
+                case WmMouseWheel:
+                case WmXButtonDown:
+                case WmXButtonUp:
+                case WmXButtonDoubleClick:
+                case WmMouseHWheel:
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                Application.RemoveMessageFilter(this);
+            }
+
+            base.Dispose(disposing);
+        }
+
+        private bool BelongsToRemoteDesktop(IntPtr hwnd)
+        {
+            if (hwnd == IntPtr.Zero || !IsHandleCreated)
+            {
+                return false;
+            }
+
+            try
+            {
+                IntPtr root = Handle;
+                return hwnd == root || NativeMethods.IsChild(root, hwnd);
+            }
+            catch (Exception)
+            {
+                // 控件正在销毁，句柄随时可能失效
+                return false;
+            }
         }
 
         private void SendKeyStrokes(int[] scanCodes, bool[] keyUps, bool[] extended)
