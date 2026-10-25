@@ -1,10 +1,10 @@
 """桌面分身页面。
 
-画面由宿主进程渲染进 ``DesktopCloneHostWidget`` 的子窗口里，页面其余控件都是普通
-Qt 控件；日志面板浮在画面右下角，可以随时关掉。
+画面由宿主进程渲染进 ``DesktopCloneHostWidget`` 的子窗口里。宿主窗口是原生子窗口，
+永远画在所有 Qt 控件上面，所以日志面板不能“浮”在画面上，只能和画面并排占一列。
 """
 
-from PySide6.QtCore import QEvent, QObject, QTimer
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -22,7 +22,6 @@ from qfluentwidgets import (
 )
 
 from one_dragon.utils.i18_utils import gt
-from one_dragon.utils.log_utils import log
 from one_dragon_qt.widgets.base_interface import BaseInterface
 from script_chainer.config.desktop_clone_config import DesktopResolution
 from script_chainer.gui.widget.desktop_clone_host_widget import DesktopCloneHostWidget
@@ -34,9 +33,7 @@ from script_chainer.services.desktop_clone.host_process import (
 )
 
 LOG_MAX_LINES = 500
-LOG_PANEL_WIDTH = 560
-LOG_PANEL_HEIGHT = 220
-LOG_PANEL_MARGIN = 12
+LOG_PANEL_WIDTH = 380
 
 # 连接超过这个时间还没结果，就认为卡住了，把界面放开让用户重试
 CONNECT_TIMEOUT_MILLIS = 25000
@@ -66,6 +63,12 @@ class DesktopCloneInterface(BaseInterface):
 
         self.service.state_changed.connect(self._on_state_changed)
         self.service.message.connect(self._on_message)
+        # 弹确认框时把画面临时收起来：画面是宿主进程的原生窗口，模态对话框
+        # 压在它下面会点不到（小窗还是独立的置顶窗口，更要收）
+        self.service.set_overlay_hooks(
+            self._suspend_picture_for_dialog,
+            self._resume_picture_after_dialog,
+        )
 
     # ---------- 界面 ----------
 
@@ -100,16 +103,21 @@ class DesktopCloneInterface(BaseInterface):
         layout.setSpacing(8)
         layout.addWidget(self._build_toolbar())
         layout.addWidget(self.notice_label)
-        # 画面要吃掉剩下的全部高度
-        layout.addWidget(self.host_widget, 1)
-        layout.addWidget(self._build_settings_bar())
-        layout.addWidget(self.status_label)
+
+        # 画面和日志并排：宿主窗口是原生子窗口，会盖住同一窗口里所有 Qt 控件，
+        # 所以日志只能占一列，不能盖在画面上
+        content = QWidget(self)
+        content_row = _hbox(content, spacing=8)
+        content_row.addWidget(self.host_widget, 1)
 
         self.log_panel = self._build_log_panel()
+        self.log_panel.setFixedWidth(LOG_PANEL_WIDTH)
         self.log_panel.setVisible(self._log_panel_visible)
+        content_row.addWidget(self.log_panel, 0)
 
-        # 画面尺寸变化时把日志面板重新摆到右下角
-        self.host_widget.installEventFilter(self)
+        layout.addWidget(content, 1)
+        layout.addWidget(self._build_settings_bar())
+        layout.addWidget(self.status_label)
 
     def _build_toolbar(self) -> QWidget:
         bar = QWidget(self)
@@ -161,17 +169,22 @@ class DesktopCloneInterface(BaseInterface):
         return bar
 
     def _build_settings_bar(self) -> QWidget:
-        """画面下方的一条设置栏。"""
+        """画面下方的设置区：挤在一行太窄，拆成两行。"""
         bar = QWidget(self)
-        row = _hbox(bar, spacing=10)
+        column = QVBoxLayout(bar)
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(6)
 
-        row.addWidget(QLabel(gt("分辨率"), bar))
+        # 第一行：分辨率 + 几个开关
+        first = _hbox(None, spacing=10)
+        first.addWidget(QLabel(gt("分辨率"), bar))
         self.resolution_cb = ComboBox(bar)
         self.resolution_cb.setFixedWidth(150)
         for item in DesktopResolution:
             self.resolution_cb.addItem(item.value.ui_text, userData=item)
-        row.addWidget(self.resolution_cb)
+        first.addWidget(self.resolution_cb)
 
+        first.addSpacing(6)
         self.watch_mode_cb = CheckBox(gt("观看模式"), bar)
         self.smart_sizing_cb = CheckBox(gt("自适应"), bar)
         self.audio_muted_cb = CheckBox(gt("静音"), bar)
@@ -182,37 +195,41 @@ class DesktopCloneInterface(BaseInterface):
             self.audio_muted_cb,
             self.syskeys_cb,
         ):
-            row.addWidget(box)
+            first.addWidget(box)
+        first.addStretch(1)
+        column.addLayout(first)
 
-        row.addSpacing(8)
-        row.addWidget(QLabel(gt("程序"), bar))
+        # 第二行：启动到分身用的程序和参数
+        second = _hbox(None, spacing=10)
+        second.addWidget(QLabel(gt("程序"), bar))
         self.target_program_edit = LineEdit(bar)
-        self.target_program_edit.setMinimumWidth(220)
+        self.target_program_edit.setMinimumWidth(260)
         self.target_program_edit.setClearButtonEnabled(True)
         self.target_program_edit.setPlaceholderText(
             self.ctx.desktop_clone_config.target_program
         )
-        row.addWidget(self.target_program_edit)
+        second.addWidget(self.target_program_edit)
 
-        row.addWidget(QLabel(gt("参数"), bar))
+        second.addWidget(QLabel(gt("参数"), bar))
         self.target_arguments_edit = LineEdit(bar)
-        self.target_arguments_edit.setMinimumWidth(150)
+        self.target_arguments_edit.setMinimumWidth(200)
         self.target_arguments_edit.setClearButtonEnabled(True)
         self.target_arguments_edit.setPlaceholderText("--onedragon --chain 01")
-        row.addWidget(self.target_arguments_edit)
+        second.addWidget(self.target_arguments_edit)
 
-        row.addWidget(QLabel(gt("脚本链"), bar))
+        second.addWidget(QLabel(gt("脚本链"), bar))
         self.chain_name_edit = LineEdit(bar)
         self.chain_name_edit.setFixedWidth(70)
         self.chain_name_edit.setClearButtonEnabled(True)
         self.chain_name_edit.setPlaceholderText("01")
-        row.addWidget(self.chain_name_edit)
+        second.addWidget(self.chain_name_edit)
 
-        row.addStretch(1)
+        second.addStretch(1)
+        column.addLayout(second)
         return bar
 
     def _build_log_panel(self) -> QWidget:
-        """右下角浮出来的日志面板，盖在画面上。"""
+        """和画面并排的日志面板。"""
         panel = QWidget(self)
         panel.setObjectName("desktop_clone_log_panel")
         panel.setStyleSheet(
@@ -254,37 +271,9 @@ class DesktopCloneInterface(BaseInterface):
     def _toggle_log_panel(self) -> None:
         self._log_panel_visible = not self._log_panel_visible
         self.log_panel.setVisible(self._log_panel_visible)
-        if self._log_panel_visible:
-            self._layout_log_panel()
 
     def _on_clear_log(self) -> None:
         self.log_view.clear()
-
-    def _layout_log_panel(self) -> None:
-        """把日志面板摆到画面的右下角。"""
-        if not self._log_panel_visible:
-            return
-
-        area = self.host_widget.geometry()
-        width = min(LOG_PANEL_WIDTH, max(240, area.width() - 2 * LOG_PANEL_MARGIN))
-        height = min(LOG_PANEL_HEIGHT, max(120, area.height() - 2 * LOG_PANEL_MARGIN))
-        x = area.x() + area.width() - width - LOG_PANEL_MARGIN
-        y = area.y() + area.height() - height - LOG_PANEL_MARGIN
-
-        self.log_panel.setGeometry(x, y, width, height)
-        self.log_panel.raise_()
-
-    def eventFilter(self, obj: QObject, event: QEvent) -> bool:
-        if obj is self.host_widget and event.type() in (
-            QEvent.Type.Resize,
-            QEvent.Type.Show,
-        ):
-            self._layout_log_panel()
-        return super().eventFilter(obj, event)
-
-    def resizeEvent(self, event) -> None:  # noqa: N802
-        super().resizeEvent(event)
-        self._layout_log_panel()
 
     # ---------- 生命周期 ----------
 
@@ -296,7 +285,6 @@ class DesktopCloneInterface(BaseInterface):
         if not self._mini_active():
             self.service.set_embedded_visible(True)
         self._sync_embed_target()
-        self._layout_log_panel()
 
         if not self._shown_once:
             self._shown_once = True
@@ -322,7 +310,6 @@ class DesktopCloneInterface(BaseInterface):
     def _on_stage_resized(self) -> None:
         view = self._active_view()
         self.service.set_embed_size(*view.stage_size())
-        self._layout_log_panel()
 
     # ---------- 小窗 ----------
 
@@ -354,12 +341,16 @@ class DesktopCloneInterface(BaseInterface):
         window = self._ensure_mini_window()
         window.show()
         window.raise_()
+        # show 之后才有真正的 HWND；句柄拿早了画面会仍留在主界面
+        window.ensure_native_handle()
         self.mini_btn.setChecked(True)
         window.set_placeholder_text("")
         window.show_placeholder(False)
         self.service.set_embed_parent(window.native_handle())
         self.service.set_embed_size(*window.stage_size())
         self.service.set_embedded_visible(True)
+        self.host_widget.show_placeholder(True)
+        self.host_widget.set_placeholder_text("画面已经切到小窗")
         self._append_log("画面已切到小窗")
 
     def _exit_mini_mode(self) -> None:
@@ -371,6 +362,7 @@ class DesktopCloneInterface(BaseInterface):
         if was_visible:
             self._append_log("画面已还原到页面")
         self._sync_embed_target()
+        self.host_widget.show_placeholder(False)
         self.service.set_embedded_visible(self.isVisible())
 
     def _ensure_mini_window(self) -> DesktopCloneMiniWindow:
@@ -405,6 +397,28 @@ class DesktopCloneInterface(BaseInterface):
     def _on_mini_stage_resized(self) -> None:
         if self._mini_active():
             self.service.set_embed_size(*self.mini_window.stage_size())
+
+    # ---------- 对话框期间收起画面 ----------
+
+    def _suspend_picture_for_dialog(self) -> dict | None:
+        """模态对话框要弹了：把画面（小窗）先收起来，返回恢复用的状态。"""
+        if not self._mini_active():
+            return None
+
+        self.mini_window.hide()
+        return {"mini": True}
+
+    def _resume_picture_after_dialog(self, state) -> None:
+        """对话框关掉后把小窗放回原位，并重新把画面挂上去。"""
+        if not state or not state.get("mini") or self.mini_window is None:
+            return
+
+        self.mini_window.show()
+        self.mini_window.raise_()
+        self.mini_window.ensure_native_handle()
+        self.service.set_embed_parent(self.mini_window.native_handle())
+        self.service.set_embed_size(*self.mini_window.stage_size())
+        self.service.set_embedded_visible(True)
 
     def _close_mini_window(self) -> None:
         self.mini_btn.setChecked(False)
@@ -492,7 +506,7 @@ class DesktopCloneInterface(BaseInterface):
         self._show_notice(text)
 
     def _append_log(self, text: str) -> None:
-        log.info(text)
+        # 只往界面日志框里写：消息本身已经由服务写进 log.txt，这里再写一遍会重复
         view = getattr(self, "log_view", None)
         if view is None:
             return
@@ -598,9 +612,9 @@ class DesktopCloneInterface(BaseInterface):
         self._refresh_status()
 
 
-def _hbox(parent: QWidget, spacing: int = 8) -> QHBoxLayout:
-    """建一个不带间距的横向布局。"""
-    layout = QHBoxLayout(parent)
+def _hbox(parent: QWidget | None, spacing: int = 8) -> QHBoxLayout:
+    """建一个不带边距的横向布局；parent 为 None 时由调用方自己 addLayout()。"""
+    layout = QHBoxLayout(parent) if parent is not None else QHBoxLayout()
     layout.setContentsMargins(0, 0, 0, 0)
     layout.setSpacing(spacing)
     return layout

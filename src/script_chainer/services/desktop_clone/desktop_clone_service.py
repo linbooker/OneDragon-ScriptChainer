@@ -61,10 +61,14 @@ class DesktopCloneService(QObject):
         self._environment_checked: bool = False
         self._applied_settings: tuple[bool, bool, bool, bool] | None = None
         self._embed_handle: int = 0
+        self._embed_visible: bool = True
         self._embed_size: tuple[int, int] = (
             DEFAULT_DESKTOP_WIDTH,
             DEFAULT_DESKTOP_HEIGHT,
         )
+
+        self._overlay_suspend_hook = None
+        self._overlay_resume_hook = None
 
     # ---------- 状态 ----------
 
@@ -168,7 +172,14 @@ class DesktopCloneService(QObject):
 
     def set_embed_parent(self, handle: int) -> None:
         """指定画面要嵌进去的界面控件句柄（0 表示不嵌、用独立窗口）。"""
-        self._embed_handle = int(handle)
+        handle = int(handle)
+        if handle == self._embed_handle:
+            return
+        self._embed_handle = handle
+        # 宿主已经起来了就要立刻换挂点，不然画面会留在旧位置（比如切到小窗后
+        # 仍显示在主界面里）
+        if handle and self.is_host_alive:
+            self._host.embed_desktop(handle, *self._embed_size)
 
     def set_embed_size(self, width: int, height: int) -> None:
         """指定嵌进去之后画面窗口的大小（控件客户区尺寸）。"""
@@ -215,8 +226,45 @@ class DesktopCloneService(QObject):
 
     def set_embedded_visible(self, visible: bool) -> None:
         """页面切走/切回时控制嵌入窗口的显隐。"""
+        # 记下来：弹确认框时会临时收一下画面，收完只恢复「本来该显示」的状态，
+        # 否则切到别的页面弹个框回来，画面会突然浮到那页上面
+        self._embed_visible = visible
         if self.is_host_alive:
             self._host.set_embedded_visible(visible)
+
+    # ---------- 对话框遮挡 ----------
+
+    def set_overlay_hooks(self, suspend, resume) -> None:
+        """界面注册「把画面临时收起来」的钩子。
+
+        画面是宿主进程里的原生窗口：嵌在页面里时它是主窗口的一块子窗口，
+        漂成小窗时更是独立的置顶窗口。两种情况下模态对话框都可能弹在它的
+        下面，所以弹框前先让界面把画面（含小窗）收起来，弹完再放回去。
+        """
+        self._overlay_suspend_hook = suspend
+        self._overlay_resume_hook = resume
+
+    def suspend_overlay(self):
+        """临时收起画面，返回恢复时要用的状态（本来就没画面时返回 None）。"""
+        state: dict = {}
+        if self.is_host_alive:
+            state["embedded_visible"] = self._embed_visible
+            self.set_embedded_visible(False)
+        if self._overlay_suspend_hook is not None:
+            extra = self._overlay_suspend_hook()
+            if extra:
+                state["page"] = extra
+        return state or None
+
+    def resume_overlay(self, state) -> None:
+        """恢复 suspend_overlay() 收起来的画面。"""
+        if not state:
+            return
+        page_state = state.get("page")
+        if page_state is not None and self._overlay_resume_hook is not None:
+            self._overlay_resume_hook(page_state)
+        if state.get("embedded_visible"):
+            self.set_embedded_visible(True)
 
     def cancel_connect(self) -> None:
         """放弃正在进行的连接（超时或用户取消）。
