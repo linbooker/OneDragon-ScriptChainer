@@ -58,6 +58,7 @@ class DesktopCloneInterface(BaseInterface):
         self._config_bound = False
         self._log_panel_visible = True
         self.mini_window: DesktopCloneMiniWindow | None = None
+        self._page_overlay_state = None
 
         self._build_ui()
 
@@ -282,9 +283,8 @@ class DesktopCloneInterface(BaseInterface):
         BaseInterface.on_interface_shown(self)
         self._bind_config()
         self._refresh_status()
-        # 切回这一页时控件可能刚拿到新的句柄，重新告诉宿主一次
-        if not self._mini_active():
-            self.service.set_embedded_visible(True)
+        # 离开这一页时收起来的画面，回到这一页再放出去
+        self._resume_page_overlay()
         self._sync_embed_target()
 
         if not self._shown_once:
@@ -294,11 +294,20 @@ class DesktopCloneInterface(BaseInterface):
 
     def on_interface_hidden(self) -> None:
         BaseInterface.on_interface_hidden(self)
-        # 画面是宿主窗口的子窗口，Qt 把控件藏起来它并不会跟着藏，
-        # 所以这里要显式告诉宿主把它藏掉，不然切页后它还浮在别的页面上。
-        # 小窗开着的时候画面本来就在别处，不用藏
-        if not self._mini_active():
-            self.service.set_embedded_visible(False)
+        # 画面是宿主进程里的原生窗口，停在这一页以外它照样浮在上面：嵌在
+        # 页面里时它是主窗口的原生子窗口，漂成小窗时更是独立的置顶窗口。
+        # 别的页面弹出遮罩对话框会被它压住、点不到，所以离开这一页就把
+        # 画面整个收起来（只暂停覆盖层，不改对话框自己的样式），回来再放回去
+        self._page_overlay_state = self.service.suspend_overlay()
+
+    def _resume_page_overlay(self) -> None:
+        """回到这一页：把离开时暂停的画面恢复出来。"""
+        state = self._page_overlay_state
+        self._page_overlay_state = None
+        if state is not None:
+            self.service.resume_overlay(state)
+        elif not self._mini_active():
+            self.service.set_embedded_visible(True)
 
     # ---------- 嵌入 ----------
 
@@ -419,7 +428,7 @@ class DesktopCloneInterface(BaseInterface):
         self.mini_window.ensure_native_handle()
         self.service.set_embed_parent(self.mini_window.native_handle())
         self.service.set_embed_size(*self.mini_window.stage_size())
-        self.service.set_embedded_visible(True)
+        # 显示与否交给 service.resume_overlay 按暂停前的状态决定，这里只负责挂回去
 
     def _close_mini_window(self) -> None:
         self.mini_btn.setChecked(False)
