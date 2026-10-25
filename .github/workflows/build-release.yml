@@ -151,6 +151,7 @@ jobs:
           "$src\ProtocolWriter.cs" `
           "$src\StdinLineReader.cs" `
           "$src\RdpClient.cs" `
+          "$src\CursorGuard.cs" `
           "$src\SessionLauncher.cs" `
           "$src\WindowHosting.cs" `
           "$src\HostForm.cs" `

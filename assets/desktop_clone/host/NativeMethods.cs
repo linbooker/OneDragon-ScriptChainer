@@ -109,6 +109,72 @@ namespace OneDragonScriptChainer.DesktopClone
         [return: MarshalAs(UnmanagedType.Bool)]
         internal static extern bool ReleaseCapture();
 
+        internal const int WhMouseLl = 14;
+        internal const int WmMouseMove = 0x0200;
+
+        internal delegate IntPtr LowLevelMouseProc(int code, IntPtr wParam, IntPtr lParam);
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct Point
+        {
+            public int X;
+            public int Y;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct MouseHookStruct
+        {
+            public Point Point;
+            public int MouseData;
+            public int Flags;
+            public int Time;
+            public IntPtr ExtraInfo;
+        }
+
+        [DllImport("user32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static extern bool GetCursorPos(out Point point);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static extern bool SetCursorPos(int x, int y);
+
+        /// <summary>
+        /// 与 GetCursorPos 不同，这两个不理会进程的 DPI 虚拟化，坐标始终是屏幕物理像素。
+        /// 低级鼠标钩子给的也是物理像素，两边必须用同一套坐标系，否则缩放屏上会对不上。
+        /// </summary>
+        [DllImport("user32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static extern bool GetPhysicalCursorPos(out Point point);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static extern bool SetPhysicalCursorPos(int x, int y);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static extern bool ClipCursor(IntPtr rect);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static extern bool GetClipCursor(out Rect rect);
+
+        [DllImport("user32.dll")]
+        internal static extern IntPtr GetCapture();
+
+        [DllImport("user32.dll", SetLastError = true)]
+        internal static extern IntPtr SetWindowsHookEx(int hookId, LowLevelMouseProc proc, IntPtr module, uint threadId);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static extern bool UnhookWindowsHookEx(IntPtr hook);
+
+        [DllImport("user32.dll")]
+        internal static extern IntPtr CallNextHookEx(IntPtr hook, int code, IntPtr wParam, IntPtr lParam);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        internal static extern IntPtr GetModuleHandleW(string moduleName);
+
         [DllImport("user32.dll")]
         [return: MarshalAs(UnmanagedType.Bool)]
         internal static extern bool IsWindow(IntPtr hwnd);

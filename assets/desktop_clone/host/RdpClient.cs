@@ -52,6 +52,8 @@ namespace OneDragonScriptChainer.DesktopClone
 
         private bool _inputBlocked;
 
+        private readonly CursorGuard _cursorGuard;
+
         /// <summary>宿主窗口（切前台、把焦点拉进分身时用）。</summary>
         internal IntPtr OwnerWindow { get; set; }
 
@@ -63,6 +65,15 @@ namespace OneDragonScriptChainer.DesktopClone
             TabStop = false;
             // 观看模式不能靠控件自己配合，得在消息派发之前拦下来，见 PreFilterMessage
             Application.AddMessageFilter(this);
+            // 观看模式下别让远程光标把本地鼠标搬走或夹住，见 CursorGuard
+            _cursorGuard = new CursorGuard();
+        }
+
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            // 只有本控件的捕获和裁剪才归护栏管，句柄出来之后再告诉它
+            _cursorGuard.AttachTo(Handle);
         }
 
         /// <summary>远程桌面控件的连接状态：0 未连接、1 已连接、其它见 IMsTscAx。</summary>
@@ -243,6 +254,7 @@ namespace OneDragonScriptChainer.DesktopClone
         {
             bool wasBlocked = _inputBlocked;
             _inputBlocked = !enabled;
+            _cursorGuard.Enabled = _inputBlocked;
             if (_inputBlocked && !wasBlocked)
             {
                 // 进入观看模式时控件可能已经把鼠标抓在手里，还回去，光标就能收回本地
@@ -307,6 +319,7 @@ namespace OneDragonScriptChainer.DesktopClone
             if (disposing)
             {
                 Application.RemoveMessageFilter(this);
+                _cursorGuard.Dispose();
             }
 
             base.Dispose(disposing);
