@@ -22,6 +22,10 @@ from script_chainer.config.desktop_clone_config import (
     DEFAULT_TARGET_ARGUMENTS,
 )
 from script_chainer.services.desktop_clone import native_api
+from script_chainer.services.desktop_clone.chain_log_tailer import (
+    ChainLogTailer,
+    chain_log_dir,
+)
 from script_chainer.services.desktop_clone.host_process import (
     STATE_CONNECTED,
     STATE_CONNECTING,
@@ -49,6 +53,9 @@ class DesktopCloneService(QObject):
     launched = Signal(int)
     """已经在分身里启动了进程，参数是进程号。"""
 
+    chain_log = Signal(str)
+    """分身里那个千机链的日志，一行一行往外发。"""
+
     def __init__(self, ctx, parent=None):
         QObject.__init__(self, parent)
         self.ctx = ctx
@@ -69,6 +76,10 @@ class DesktopCloneService(QObject):
 
         self._overlay_suspend_hook = None
         self._overlay_resume_hook = None
+
+        # 分身在另一个会话里，拿不到它的 stdout，只能盯它自己写的日志文件
+        self._tailer = ChainLogTailer(self)
+        self._tailer.line_received.connect(self.chain_log.emit)
 
     # ---------- 状态 ----------
 
@@ -188,6 +199,7 @@ class DesktopCloneService(QObject):
             self._host.resize_desktop(*self._embed_size)
 
     def stop_host(self) -> None:
+        self.stop_chain_log()
         if self._host is not None:
             self._host.stop()
             self._host.deleteLater()
@@ -221,6 +233,7 @@ class DesktopCloneService(QObject):
         self._host.connect_desktop(width, height)
 
     def disconnect_desktop(self) -> None:
+        self.stop_chain_log()
         if self.is_host_alive:
             self._host.disconnect_desktop()
 
@@ -279,6 +292,7 @@ class DesktopCloneService(QObject):
 
     def logoff(self) -> None:
         """注销子会话（会关掉分身里运行的程序）。"""
+        self.stop_chain_log()
         if self.is_host_alive:
             self._host.logoff()
 
@@ -299,16 +313,56 @@ class DesktopCloneService(QObject):
             self._host.set_input_enabled(enabled)
 
     def launch(
-        self, exe_path: str, arguments: str = "", work_directory: str = ""
+        self,
+        exe_path: str,
+        arguments: str = "",
+        work_directory: str = "",
+        tail_log: bool = True,
     ) -> None:
-        """在分身里启动程序。"""
+        """在分身里启动程序，并把它的日志接回界面。
+
+        ``tail_log`` 只对「本程序」有意义：千机链会把自己的输出写进工作目录的
+        ``.log/``，别的程序没有这份日志，盯了也收不到东西。
+        """
         if not self.is_host_alive:
             self._emit_message("桌面分身还没有启动")
             return
         if not self._session_id:
             self._emit_message("分身会话还没有建立，请先连接桌面分身")
             return
+        # 先记下日志文件现在多大，再启动：这样只转发这次新写进去的行，
+        # 上一次运行留下的旧内容不会被当成新日志念一遍
+        if tail_log:
+            self._prime_chain_log(work_directory)
+        else:
+            # 换成了外部程序：上一条脚本链的日志别再往下刷了
+            self.stop_chain_log()
         self._host.launch(exe_path, arguments, work_directory)
+        if tail_log:
+            self._start_chain_log(work_directory)
+
+    # ---------- 分身日志 ----------
+
+    def _prime_chain_log(self, work_directory: str) -> None:
+        """启动前记下日志位置（见 ``ChainLogTailer.prime``）。"""
+        self._tailer.prime(chain_log_dir(work_directory))
+
+    def _start_chain_log(self, work_directory: str) -> None:
+        """盯住被启动程序的日志目录，把它的输出转发回界面。
+
+        分身在另一个会话里，拿不到 stdout，但程序自己会把日志写进 ``.log/``，
+        按偏移读新行就相当于把它的控制台搬过来了。
+
+        只读不写：转发来的行不会再写回任何日志文件，否则一读一写就是无限
+        自我复制的刷屏。
+        """
+        self._tailer.start(chain_log_dir(work_directory))
+        if self._tailer.is_tailing():
+            self.chain_log.emit("—— 开始接收千机链的日志 ——")
+
+    def stop_chain_log(self) -> None:
+        """不再转发分身日志（断开连接、注销、退出时调用）。"""
+        self._tailer.stop()
 
     def launch_self(self, chain_name: str | None = None) -> None:
         """把本程序（无界面运行）启动到分身里。"""
@@ -334,7 +388,8 @@ class DesktopCloneService(QObject):
         if arguments == DEFAULT_TARGET_ARGUMENTS:
             # 用户换了目标程序但没改参数，别把本程序的参数硬塞给别人
             arguments = ""
-        self.launch(exe_path, arguments, work_directory)
+        # 外部程序不会把日志写进 .log/，没有可转发的
+        self.launch(exe_path, arguments, work_directory, tail_log=False)
 
     def _is_self_program(self, exe_path: str) -> bool:
         try:

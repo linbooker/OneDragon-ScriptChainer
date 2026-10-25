@@ -63,6 +63,7 @@ class DesktopCloneInterface(BaseInterface):
 
         self.service.state_changed.connect(self._on_state_changed)
         self.service.message.connect(self._on_message)
+        self.service.chain_log.connect(self._on_chain_log)
         # 弹确认框时把画面临时收起来：画面是宿主进程的原生窗口，模态对话框
         # 压在它下面会点不到（小窗还是独立的置顶窗口，更要收）
         self.service.set_overlay_hooks(
@@ -505,8 +506,14 @@ class DesktopCloneInterface(BaseInterface):
         self._append_log(text)
         self._show_notice(text)
 
+    def _on_chain_log(self, text: str) -> None:
+        """分身里那个千机链的日志：加个前缀，和本界面的消息区分开。"""
+        if text:
+            self._append_log(f"分身 | {text}")
+
     def _append_log(self, text: str) -> None:
-        # 只往界面日志框里写：消息本身已经由服务写进 log.txt，这里再写一遍会重复
+        # 只往界面日志框里写，不写回日志文件：转进来的分身日志就是从日志文件
+        # 读出来的，写回去会被再读一遍，转一圈就成了自我复制的刷屏
         view = getattr(self, "log_view", None)
         if view is None:
             return
