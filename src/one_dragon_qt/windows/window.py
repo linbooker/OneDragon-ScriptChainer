@@ -38,6 +38,7 @@ from qfluentwidgets.components.widgets.frameless_window import FramelessWindow
 from qfluentwidgets.window.stacked_widget import StackedWidget
 
 from one_dragon_qt.utils.layout_utils import apply_shadow
+from one_dragon_qt.utils.mask_dialog import install_mask_dialog_compat
 
 try:
     _user32 = ctypes.WinDLL('user32', use_last_error=True)
@@ -200,6 +201,10 @@ class PhosWindow(MSFluentWindow, PhosFluentWindowBase):
 
         # 父类初始化
         PhosFluentWindowBase.__init__(self, parent=parent)
+
+        # 遮罩对话框要走非模态 exec，否则主窗口里有原生子窗口时点不动，
+        # 详见 one_dragon_qt.utils.mask_dialog
+        install_mask_dialog_compat()
 
         # 变量
         self.hBoxLayout = QHBoxLayout(self)
