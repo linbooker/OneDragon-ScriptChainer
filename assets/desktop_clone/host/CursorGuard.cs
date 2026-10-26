@@ -187,6 +187,50 @@ namespace OneDragonScriptChainer.DesktopClone
             }
         }
 
+        /// <summary>
+        /// 断开或注销之后把光标从远程桌面手里彻底收回来。
+        ///
+        /// 控件连着会话时会把光标裁剪在自己的画面范围内。断开之后这条裁剪不一定被解开，
+        /// 而画面窗口又会被挪到 (-32000, -32000) 这种看不见的地方、缩成 1x1，裁剪范围跟着
+        /// 变成屏幕外的一个点 —— 本地鼠标就推不动了，用户看到的正是「注销分身后鼠标不动」。
+        /// 所以这里解开捕获、清掉裁剪；光标已经被钉在屏幕外的话，再搬回可见区域。
+        /// </summary>
+        internal void FreeCursor()
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            IntPtr capture = NativeMethods.GetCapture();
+            if (capture != IntPtr.Zero && (_remoteHandle == IntPtr.Zero || BelongsToRemote(capture)))
+            {
+                NativeMethods.ReleaseCapture();
+            }
+
+            NativeMethods.ClipCursor(IntPtr.Zero);
+
+            NativeMethods.Point current;
+            if (NativeMethods.GetCursorPos(out current) && !IsOnScreen(current))
+            {
+                Rectangle work = Screen.PrimaryScreen.WorkingArea;
+                NativeMethods.SetCursorPos(work.Left + (work.Width / 2), work.Top + (work.Height / 2));
+            }
+
+            SyncToCursor();
+        }
+
+        /// <summary>
+        /// 光标是否还落在看得见的那块桌面上。这里两边都用「虚拟化」坐标：GetCursorPos 与
+        /// SystemInformation.VirtualScreen 在没做 DPI 感知的进程里是同一套，可以直接比。
+        /// </summary>
+        private static bool IsOnScreen(NativeMethods.Point point)
+        {
+            Rectangle screen = SystemInformation.VirtualScreen;
+            return point.X >= screen.Left && point.X < screen.Right
+                && point.Y >= screen.Top && point.Y < screen.Bottom;
+        }
+
         private bool CursorInsideRemote()
         {
             if (_remoteHandle == IntPtr.Zero)

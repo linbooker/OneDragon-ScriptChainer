@@ -173,6 +173,20 @@ namespace OneDragonScriptChainer.DesktopClone
             {
                 // 控件可能已经释放，忽略
             }
+            finally
+            {
+                // 断开之后控件可能把捕获和光标裁剪留在系统里，不收回来本地鼠标就推不动
+                FreeLocalCursor();
+            }
+        }
+
+        /// <summary>
+        /// 把本地光标从远程桌面手里收回来。断开、注销、画面被挪走之后都要叫一次，
+        /// 否则控件留下的捕获/裁剪会让本地鼠标卡住，见 CursorGuard.FreeCursor。
+        /// </summary>
+        internal void FreeLocalCursor()
+        {
+            _cursorGuard.FreeCursor();
         }
 
         /// <summary>动态修改画面自适应缩放（无需重连）。</summary>
@@ -319,6 +333,8 @@ namespace OneDragonScriptChainer.DesktopClone
             if (disposing)
             {
                 Application.RemoveMessageFilter(this);
+                // 释放前先把自己留下的捕获/裁剪收拾干净，否则进程退了鼠标还卡着
+                _cursorGuard.FreeCursor();
                 _cursorGuard.Dispose();
             }
 

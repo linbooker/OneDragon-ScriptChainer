@@ -43,6 +43,14 @@ namespace OneDragonScriptChainer.DesktopClone
         private readonly WinFormsTimer _layoutTimer;
         private readonly WinFormsTimer _stateTimer;
 
+        /// <summary>
+        /// 断开/注销之后连着扫几遍地光标。控件是在断开流程里陆续把捕获和裁剪放掉的，
+        /// 只收拾一次不够——画面窗口挪走之后它可能又裁一次，光标就又被钉住了。
+        /// </summary>
+        private readonly WinFormsTimer _cursorSweepTimer;
+
+        private int _cursorSweepTicks;
+
         /// <summary>界面端发来 bounds 之前先把窗口停在屏幕外，避免在屏幕角落闪一下。</summary>
         private static readonly Point OffScreenLocation = new Point(-32000, -32000);
 
@@ -109,6 +117,10 @@ namespace OneDragonScriptChainer.DesktopClone
             _stateTimer = new WinFormsTimer();
             _stateTimer.Interval = 500;
             _stateTimer.Tick += OnStateTick;
+
+            _cursorSweepTimer = new WinFormsTimer();
+            _cursorSweepTimer.Interval = 100;
+            _cursorSweepTimer.Tick += OnCursorSweepTick;
         }
 
         protected override void OnHandleCreated(EventArgs e)
@@ -150,6 +162,36 @@ namespace OneDragonScriptChainer.DesktopClone
             }
 
             LayoutRdp();
+        }
+
+        /// <summary>
+        /// 断开/注销之后把本地光标收回来，并在接下来两秒里重复确认几次。
+        ///
+        /// 控件连着会话时会把光标裁剪在自己的画面范围内，断开时这条裁剪不一定马上解开；
+        /// 而且未连接时画面窗口会被挪到屏幕外缩成 1x1，裁剪范围跟着变成一个屏幕外的点，
+        /// 本地鼠标就彻底推不动了（用户报的「点击注销分身后鼠标无法移动」）。
+        /// </summary>
+        private void BeginCursorFreeSweep()
+        {
+            if (_rdp == null)
+            {
+                return;
+            }
+
+            _rdp.FreeLocalCursor();
+            _cursorSweepTicks = 20;
+            _cursorSweepTimer.Stop();
+            _cursorSweepTimer.Start();
+        }
+
+        private void OnCursorSweepTick(object sender, EventArgs e)
+        {
+            _rdp.FreeLocalCursor();
+            _cursorSweepTicks--;
+            if (_cursorSweepTicks <= 0)
+            {
+                _cursorSweepTimer.Stop();
+            }
         }
 
         /// <summary>控件不靠 Dock，按客户区手工铺一次，避免画面只画在一小块区域。</summary>
@@ -195,6 +237,7 @@ namespace OneDragonScriptChainer.DesktopClone
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
             _stateTimer.Stop();
+            _cursorSweepTimer.Stop();
             try
             {
                 _rdp.Disconnect();
@@ -237,6 +280,9 @@ namespace OneDragonScriptChainer.DesktopClone
             {
                 _rdp.SetBounds(-32000, -32000, 1, 1);
             }
+
+            // 画面挪走之后控件可能把光标裁剪范围一起带成屏幕外的一个点，得把光标收回来
+            BeginCursorFreeSweep();
 
             string text;
             if (state == 2 || state == 4)
@@ -513,6 +559,12 @@ namespace OneDragonScriptChainer.DesktopClone
                 // 嵌在页面里的时候，页面切走要把窗口一起藏起来，
                 // 否则它只是窗口的「子窗口」，Qt 藏了控件它也还画在原处
                 NativeMethods.ShowWindow(Handle, visible ? NativeMethods.SwShow : NativeMethods.SwHide);
+                if (!visible)
+                {
+                    // 画面藏起来了，控件留在系统里的光标裁剪也得一起收掉，不然鼠标出不了那块区域
+                    BeginCursorFreeSweep();
+                }
+
                 return;
             }
 
@@ -549,6 +601,8 @@ namespace OneDragonScriptChainer.DesktopClone
 
             _layoutTimer.Stop();
             NativeMethods.HideWindow(Handle);
+            // 窗口藏了，控件留下的光标裁剪同样要收回，否则鼠标被夹在已经看不见的画面里
+            BeginCursorFreeSweep();
         }
 
         /// <summary>把窗口与远程桌面控件的实际状态回报给界面端，便于排查黑屏。</summary>
@@ -677,6 +731,8 @@ namespace OneDragonScriptChainer.DesktopClone
             }
 
             _rdp.Disconnect();
+            // 注销会把子会话一起关掉，控件这边的收尾更乱，光标得多扫几遍才稳
+            BeginCursorFreeSweep();
             bool ok = NativeMethods.WTSLogoffSession(IntPtr.Zero, sessionId, true);
             if (!ok)
             {
