@@ -18,6 +18,18 @@ namespace OneDragonScriptChainer.DesktopClone
         /// <summary>护栏的检查间隔：够快，人眼看不出光标跳了一下。</summary>
         private const int TickMilliseconds = 50;
 
+        /// <summary>
+        /// 钩子超过这么久没有回调，就认为它已经被系统卸掉了。
+        ///
+        /// 系统对低级钩子有 LowLevelHooksTimeout（默认 300ms）：钩子所属的线程没及时处理，
+        /// 系统会**悄悄**把钩子摘掉，而且不通知谁。UI 线程卡在注销、等子会话关闭这类地方
+        /// 几秒钟就足够触发一次。
+        /// </summary>
+        private const int HookAliveMilliseconds = 800;
+
+        /// <summary>发现钩子没了之后，隔这么久才重新装一次，别每 50ms 折腾一遍。</summary>
+        private const int HookRepairMilliseconds = 2000;
+
         private readonly Timer _timer;
 
         /// <summary>
@@ -25,7 +37,14 @@ namespace OneDragonScriptChainer.DesktopClone
         /// </summary>
         private readonly NativeMethods.LowLevelMouseProc _hookProc;
 
-        private readonly IntPtr _hook;
+        /// <summary>不 readonly：钩子被系统摘掉之后要重装。</summary>
+        private IntPtr _hook;
+
+        /// <summary>最近一次钩子回调的时刻（Environment.TickCount），用来判断钩子还活着没有。</summary>
+        private int _lastHookEventTicks;
+
+        /// <summary>最近一次重装钩子的时刻。</summary>
+        private int _lastHookRepairTicks;
 
         private int _restoreX;
         private int _restoreY;
@@ -38,11 +57,7 @@ namespace OneDragonScriptChainer.DesktopClone
         internal CursorGuard()
         {
             _hookProc = OnMouseEvent;
-            _hook = NativeMethods.SetWindowsHookEx(
-                NativeMethods.WhMouseLl,
-                _hookProc,
-                NativeMethods.GetModuleHandleW(null),
-                0);
+            EnsureHook();
 
             _timer = new Timer();
             _timer.Interval = TickMilliseconds;
@@ -57,13 +72,15 @@ namespace OneDragonScriptChainer.DesktopClone
             get { return _timer.Enabled; }
             set
             {
-                if (_disposed)
+                if (_disposed || value == _timer.Enabled)
                 {
+                    // 状态没变就别反复装卸钩子：状态轮询每 500ms 会调一次
                     return;
                 }
 
                 if (value)
                 {
+                    EnsureHook();
                     SyncToCursor();
                     _timer.Start();
                 }
@@ -90,6 +107,29 @@ namespace OneDragonScriptChainer.DesktopClone
             {
                 NativeMethods.UnhookWindowsHookEx(_hook);
             }
+        }
+
+        /// <summary>重新装一次低级鼠标钩子。装不上就返回零柄，护栏退化成只管捕获和裁剪。</summary>
+        private void EnsureHook()
+        {
+            if (_hook != IntPtr.Zero)
+            {
+                NativeMethods.UnhookWindowsHookEx(_hook);
+                _hook = IntPtr.Zero;
+            }
+
+            _hook = NativeMethods.SetWindowsHookEx(
+                NativeMethods.WhMouseLl,
+                _hookProc,
+                NativeMethods.GetModuleHandleW(null),
+                0);
+            _lastHookRepairTicks = Environment.TickCount;
+        }
+
+        /// <summary>钩子最近还在回调吗？系统摘钩子不会通知我们，只能这样自己看。</summary>
+        private bool HookAlive()
+        {
+            return unchecked(Environment.TickCount - _lastHookEventTicks) <= HookAliveMilliseconds;
         }
 
         /// <summary>
@@ -150,6 +190,7 @@ namespace OneDragonScriptChainer.DesktopClone
         /// </summary>
         private IntPtr OnMouseEvent(int code, IntPtr wParam, IntPtr lParam)
         {
+            _lastHookEventTicks = Environment.TickCount;
             if (code >= 0 && wParam == (IntPtr)NativeMethods.WmMouseMove)
             {
                 var data = (NativeMethods.MouseHookStruct)Marshal.PtrToStructure(
@@ -178,6 +219,19 @@ namespace OneDragonScriptChainer.DesktopClone
                 NativeMethods.ClipCursor(IntPtr.Zero);
             }
 
+            // 钩子被系统摘掉之后「真实鼠标位置」就再也不会更新了。这时候还硬把光标搬回那个
+            // 旧位置，等于把鼠标钉死在一动不动的点上 —— 注销、等子会话关闭之类会卡住 UI 线程
+            // 几秒的操作刚好能让钩子超时被摘，所以必须先确认钩子还活着。
+            if (!ShouldRestoreCursor())
+            {
+                if (unchecked(Environment.TickCount - _lastHookRepairTicks) >= HookRepairMilliseconds)
+                {
+                    EnsureHook();
+                }
+
+                return;
+            }
+
             // 光标被远程会话搬到别处时，放回真实鼠标的位置（同样只用物理坐标，见 SyncToCursor）
             NativeMethods.Point current;
             if (NativeMethods.GetPhysicalCursorPos(out current)
@@ -185,6 +239,17 @@ namespace OneDragonScriptChainer.DesktopClone
             {
                 NativeMethods.SetPhysicalCursorPos(_restoreX, _restoreY);
             }
+        }
+
+        /// <summary>
+        /// 现在能不能把光标搬回「真实鼠标位置」。
+        ///
+        /// 只有钩子最近还在回调时才敢搬：钩子一旦被系统摘掉，记下来的位置就再也不更新，
+        /// 拿它去覆盖光标等于把鼠标钉死。这是「注销分身后鼠标动不了」的根因。
+        /// </summary>
+        private bool ShouldRestoreCursor()
+        {
+            return !_disposed && HookAlive();
         }
 
         /// <summary>
@@ -257,3 +322,4 @@ namespace OneDragonScriptChainer.DesktopClone
         }
     }
 }
+

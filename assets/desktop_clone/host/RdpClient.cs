@@ -175,7 +175,9 @@ namespace OneDragonScriptChainer.DesktopClone
             }
             finally
             {
-                // 断开之后控件可能把捕获和光标裁剪留在系统里，不收回来本地鼠标就推不动
+                // 断开之后没必要再护栏了：会话都没了，护栏还开着只会继续跟光标较劲
+                _cursorGuard.Enabled = false;
+                // 控件可能把捕获和光标裁剪留在系统里，不收回来本地鼠标就推不动
                 FreeLocalCursor();
             }
         }
